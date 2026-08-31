@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Customer, Invoice, InvoiceItem, PaymentMethod, Product, ProductCategory } from '../types';
+import { CompanyProfile, Customer, Invoice, InvoiceItem, PaymentMethod, Product, ProductCategory } from '../types';
 import { formatCurrency, generateZatcaTlvQrCode } from '../utils/zatca';
 import {
   Search,
@@ -27,6 +27,7 @@ import {
   ShieldCheck,
   Clock,
   RefreshCw,
+  AlertTriangle,
 } from 'lucide-react';
 import { QRCodeDisplay } from './QRCodeDisplay';
 
@@ -37,12 +38,14 @@ interface PosViewProps {
   onCompleteSale: (newInvoice: Invoice) => void;
   onUpdateInvoice?: (invoice: Invoice) => void;
   onOpenInvoiceModal: (invoice: Invoice) => void;
+  companyProfile?: CompanyProfile;
   companyVatNumber: string;
   companyName: string;
   branchName?: string;
   cashierName?: string;
   defaultVatRate?: number;
   isOnboarded?: boolean;
+  onOpenZatcaWizard?: () => void;
   onAddCustomer?: (customer: Customer) => void;
   selectedCustomerFromApp?: Customer | null;
   onClearSelectedCustomerFromApp?: () => void;
@@ -69,12 +72,14 @@ export const PosView: React.FC<PosViewProps> = ({
   onCompleteSale,
   onUpdateInvoice,
   onOpenInvoiceModal,
+  companyProfile,
   companyVatNumber,
   companyName,
   branchName,
   cashierName,
   defaultVatRate = 0.15,
   isOnboarded = false,
+  onOpenZatcaWizard,
   onAddCustomer,
   selectedCustomerFromApp,
   onClearSelectedCustomerFromApp,
@@ -92,8 +97,6 @@ export const PosView: React.FC<PosViewProps> = ({
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('card');
   const [cashReceived, setCashReceived] = useState<string>('');
   const [completedInvoice, setCompletedInvoice] = useState<Invoice | null>(null);
-  const [linkWithZatca, setLinkWithZatca] = useState<boolean>(true);
-  const [isLinkingZatca, setIsLinkingZatca] = useState<boolean>(false);
 
   // Customer Management Modals inside POS
   const [isCustomerSelectModalOpen, setIsCustomerSelectModalOpen] = useState(false);
@@ -467,7 +470,6 @@ export const PosView: React.FC<PosViewProps> = ({
     const currentYear = new Date().getFullYear();
     const invoiceNum = `INV-${currentYear}-${Math.floor(1000 + Math.random() * 9000)}`;
     const isBusiness = selectedCustomer?.taxNumber && selectedCustomer.taxNumber.length > 5;
-    const isZatcaApproved = linkWithZatca && isOnboarded;
 
     const qrCode = generateZatcaTlvQrCode(
       companyName,
@@ -494,11 +496,7 @@ export const PosView: React.FC<PosViewProps> = ({
       totalVat: parseFloat(totalVat.toFixed(2)),
       grandTotal: parseFloat(grandTotal.toFixed(2)),
       paymentMethod: paymentMethod,
-      zatcaStatus: isZatcaApproved ? 'cleared' : 'pending',
-      zatcaSubmissionDate: isZatcaApproved ? timestamp : undefined,
-      cryptographicStamp: isZatcaApproved
-        ? `MEUCIQD${Math.random().toString(36).substring(2, 12)}...ZATCA-LIVE-STAMP`
-        : undefined,
+      zatcaStatus: 'pending',
       qrCodeData: qrCode,
       branch: branchName || companyName || 'الفرع الرئيسي',
       cashierName: cashierName || companyName || 'الكاشير',
@@ -509,25 +507,6 @@ export const PosView: React.FC<PosViewProps> = ({
     setIsPaymentModalOpen(false);
     setSelectedCustomer(defaultCashCustomer);
     clearCart();
-  };
-
-  const handleLinkCompletedInvoiceToZatca = () => {
-    if (!completedInvoice) return;
-    setIsLinkingZatca(true);
-    setTimeout(() => {
-      const timestamp = new Date().toISOString();
-      const updated: Invoice = {
-        ...completedInvoice,
-        zatcaStatus: 'cleared',
-        zatcaSubmissionDate: timestamp,
-        cryptographicStamp: `MEUCIQD${Math.random().toString(36).substring(2, 12)}...ZATCA-LIVE-STAMP`,
-      };
-      setCompletedInvoice(updated);
-      if (onUpdateInvoice) {
-        onUpdateInvoice(updated);
-      }
-      setIsLinkingZatca(false);
-    }, 600);
   };
 
   const cashChange =
@@ -1745,43 +1724,6 @@ export const PosView: React.FC<PosViewProps> = ({
               </div>
             )}
 
-            {/* ZATCA Linking Option Switch */}
-            <div className="bg-[#f7f9fb] rounded-xl p-3.5 border border-[#becabd] mb-4 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <div
-                  className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                    linkWithZatca ? 'bg-[#005126]/15 text-[#005126]' : 'bg-gray-200 text-gray-500'
-                  }`}
-                >
-                  <ShieldCheck className="w-4 h-4" />
-                </div>
-                <div>
-                  <span className="text-xs font-bold text-[#191c1e] block">
-                    الربط مع هيئة الزكاة (منصة فاتورة)
-                  </span>
-                  <span className="text-[10px] text-[#505f76] block">
-                    {linkWithZatca
-                      ? 'اعتماد الفاتورة وتوليد الختم الرقمي الرسمي فورياً'
-                      : 'فاتورة محلية عادية غير مرتبطة بالهيئة'}
-                  </span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setLinkWithZatca(!linkWithZatca)}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  linkWithZatca ? 'bg-[#005126]' : 'bg-gray-300'
-                }`}
-                title={linkWithZatca ? 'تعطيل الربط للهيئة' : 'تفعيل الربط للهيئة'}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                    linkWithZatca ? 'translate-x-0' : '-translate-x-5'
-                  }`}
-                />
-              </button>
-            </div>
-
             {/* Submit */}
             <button
               onClick={finalizeSale}
@@ -1833,10 +1775,15 @@ export const PosView: React.FC<PosViewProps> = ({
               </div>
               <div className="flex justify-between items-center pt-1 border-t border-[#eceef0]">
                 <span className="text-[#505f76]">حالة الربط بهيئة الزكاة:</span>
-                {completedInvoice.zatcaStatus === 'cleared' ? (
+                {completedInvoice.zatcaStatus === 'cleared' && isOnboarded ? (
                   <span className="font-bold text-[#005126] flex items-center gap-1 bg-[#e8f5e9] px-2 py-0.5 rounded-full border border-[#005126]/20">
                     <CheckCircle2 className="w-3.5 h-3.5" />
                     <span>معتمدة ومسجلة (ZATCA)</span>
+                  </span>
+                ) : completedInvoice.zatcaStatus === 'failed' ? (
+                  <span className="font-bold text-red-800 flex items-center gap-1 bg-red-50 px-2 py-0.5 rounded-full border border-red-200">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    <span>مرفوضة من الهيئة</span>
                   </span>
                 ) : (
                   <span className="font-bold text-amber-800 flex items-center gap-1 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
@@ -1849,19 +1796,6 @@ export const PosView: React.FC<PosViewProps> = ({
 
             {/* Action Buttons */}
             <div className="space-y-2 pt-1">
-              {/* On-Demand Link to ZATCA button if not linked */}
-              {completedInvoice.zatcaStatus !== 'cleared' && (
-                <button
-                  type="button"
-                  onClick={handleLinkCompletedInvoiceToZatca}
-                  disabled={isLinkingZatca}
-                  className="w-full py-2.5 bg-[#006c35] text-white font-bold rounded-xl text-xs hover:bg-[#005126] flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isLinkingZatca ? 'animate-spin' : ''}`} />
-                  <span>{isLinkingZatca ? 'جاري الربط مع الهيئة...' : 'ربط الفاتورة الآن مع هيئة الزكاة (فاتورة)'}</span>
-                </button>
-              )}
-
               <button
                 onClick={() => {
                   onOpenInvoiceModal(completedInvoice);

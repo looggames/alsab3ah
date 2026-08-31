@@ -200,43 +200,57 @@ export interface ComplianceCsidResponse {
 export async function requestComplianceCsid(
   otp: string,
   csrPem: string,
-  environment: 'production' | 'simulation' | 'sandbox' = 'production'
+  environment: 'production' | 'simulation' | 'sandbox' = 'production',
+  profile?: CompanyProfile
 ): Promise<ComplianceCsidResponse> {
-  // Simulate network delay to ZATCA API
-  await new Promise((res) => setTimeout(res, 1200));
-
   const cleanOtp = otp.trim().replace(/\D/g, '');
   if (!cleanOtp || cleanOtp.length !== 6) {
     return {
       success: false,
-      message: 'رمز التحقق (OTP) غير صالح. يجب أن يتكون من 6 أرقام صادرة من بوابة هيئة الزكاة (فاتورة).',
+      message: 'رمز التحقق (OTP) غير صالح. يجب أن يتكون من 6 أرقام صادرة من منصة فاتورة التابعة لهيئة الزكاة والضريبة والجمارك.',
       statusCode: 400,
     };
   }
 
-  // Authentic mock ZATCA CSID issuance token
-  const complianceToken = `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.${window.btoa(
-    JSON.stringify({
-      iss: 'ZATCA Fatoora Root CA',
-      sub: 'ZATCA Compliance EGS Certificate',
-      env: environment,
-      otpVerified: true,
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 86400 * 30, // 30 days for compliance
-    })
-  )}.ZATCA_CCSID_SIG_${Math.random().toString(36).substring(2, 10)}`;
+  try {
+    const res = await fetch('/api/zatca/compliance-csid', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        otp: cleanOtp,
+        csrPem,
+        environment,
+        profile,
+      }),
+    });
 
-  const complianceSecret = `sec_comp_${Math.random().toString(36).substring(2, 15)}_${Math.random().toString(36).substring(2, 10)}`;
-  const complianceRequestId = `REQ-COMP-${Math.floor(100000 + Math.random() * 900000)}`;
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      return {
+        success: false,
+        message: data.message || `خطأ من هيئة الزكاة (ZATCA ${res.status}): تعذر اعتماد رمز OTP أو بيانات الشهادة.`,
+        statusCode: data.statusCode || res.status || 400,
+      };
+    }
 
-  return {
-    success: true,
-    complianceCsid: complianceToken,
-    complianceSecret,
-    complianceRequestId,
-    message: 'تم التحقق من رمز OTP وإصدار شهادة الامتثال المؤقتة (Compliance CSID) بنجاح.',
-    statusCode: 200,
-  };
+    return {
+      success: true,
+      complianceCsid: data.complianceCsid,
+      complianceSecret: data.secret,
+      complianceRequestId: data.requestID ? String(data.requestID) : undefined,
+      message: data.message || 'تم التحقق من رمز OTP وإصدار شهادة الامتثال بنجاح.',
+      statusCode: 200,
+    };
+  } catch (error: any) {
+    console.warn('Network error during compliance CSID request:', error);
+    return {
+      success: false,
+      message: error.message || 'تعذر الاتصال بخوادم هيئة الزكاة والضريبة والجمارك.',
+      statusCode: 500,
+    };
+  }
 }
 
 // ============================================================================
@@ -571,6 +585,71 @@ export interface ZatcaTaxpayerLookupResult {
   message: string;
 }
 
+export interface ZatcaInvoiceSubmissionResult {
+  success: boolean;
+  statusCode?: number;
+  zatcaStatus?: 'cleared' | 'failed' | 'pending';
+  submissionDate?: string;
+  cryptographicStamp?: string;
+  hash?: string;
+  dispositionMessage?: string;
+  message: string;
+  errors?: Array<{ category?: string; code?: string; message: string }>;
+}
+
+/**
+ * Submits and validates an invoice against official ZATCA Phase 2 clearance/reporting rules via server API
+ */
+export async function submitInvoiceToZatcaApi(
+  invoice: any,
+  profile: any,
+  environment: 'production' | 'simulation' | 'sandbox' = 'production'
+): Promise<ZatcaInvoiceSubmissionResult> {
+  try {
+    const res = await fetch('/api/zatca/report-invoice', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        invoice,
+        profile,
+        environment,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      return {
+        success: false,
+        statusCode: data.statusCode || res.status,
+        zatcaStatus: 'failed',
+        message: data.message || 'تم رفض الفاتورة من قبل منصة فاتورة (ZATCA Validation Error).',
+        errors: data.errors || [],
+      };
+    }
+
+    return {
+      success: true,
+      statusCode: data.statusCode || 200,
+      zatcaStatus: data.zatcaStatus || 'cleared',
+      submissionDate: data.submissionDate || new Date().toISOString(),
+      cryptographicStamp: data.cryptographicStamp,
+      hash: data.hash,
+      dispositionMessage: data.dispositionMessage,
+      message: data.message || 'تم اعتماد الفاتورة ومطابقتها رسمياً لدى هيئة الزكاة والضريبة والجمارك.',
+    };
+  } catch (error: any) {
+    console.warn('Error in submitInvoiceToZatcaApi:', error);
+    return {
+      success: false,
+      statusCode: 500,
+      zatcaStatus: 'failed',
+      message: error.message || 'حدث خطأ أثناء الاتصال بمنصة هيئة الزكاة.',
+    };
+  }
+}
+
 /**
  * Queries official ZATCA & Wathq Business Registry API for verified taxpayer credentials
  */
@@ -578,73 +657,40 @@ export async function verifyZatcaTaxpayerApi(
   identifier: string,
   hintCompanyName?: string
 ): Promise<ZatcaTaxpayerLookupResult> {
-  // Simulate remote lookup latency to ZATCA / Wathq API
-  await new Promise((res) => setTimeout(res, 600));
-
   const clean = (identifier || '').replace(/\D/g, '').trim();
 
-  // 1. Generic valid Saudi TIN or 15-digit VAT
-  if (clean.length === 10 || clean.length === 15) {
-    const norm = normalizeSaudiTaxNumber(clean);
-    const crNorm = normalizeSaudiCrNumber(clean);
+  try {
+    const res = await fetch('/api/zatca/verify-taxpayer', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        identifier: clean,
+        companyName: hintCompanyName,
+      }),
+    });
 
-    if (norm.isValid) {
+    const data = await res.json();
+    if (!res.ok || !data.success) {
       return {
-        success: true,
-        data: {
-          nameAr: hintCompanyName?.trim() || `مؤسسة تجارية مسجلة (${norm.tinNumber})`,
-          nameEn: `Commercial Enterprise (${norm.tinNumber})`,
-          tin: norm.tinNumber,
-          vatNumber: norm.vatNumber,
-          crNumber: crNorm.isUnified700 ? crNorm.crNumber : '1010' + norm.tinNumber.substring(4, 10),
-          crType: crNorm.isUnified700 ? 'الرقم الوطني الموحد (700)' : 'سجل تجاري (CR)',
-          isVatRegistered: true,
-          vatStatus: 'مسجل ونشط في ضريبة القيمة المضافة (15%)',
-          taxpayerStatus: 'مكلف معتمد في منظومة الفوترة الإلكترونية',
-          city: 'الرياض',
-          street: 'طريق الملك فهد',
-          district: 'حي العليا',
-          buildingNumber: '1234',
-          postalCode: '12214',
-          registrationDate: '2023-01-01',
-          complianceStatus: 'compliant',
-        },
-        message: `تم التحقق بنجاح من صحة الرقم المميز ${norm.tinNumber} واعتماد الرقم الضريبي الرسمي ${norm.vatNumber}.`,
+        success: false,
+        message: data.message || 'تعذر التحقق من بيانات المنشأة لدى هيئة الزكاة والضريبة والجمارك.',
       };
     }
-  }
 
-  // 2. 700 Number Match
-  if (clean.startsWith('70') && clean.length === 10) {
-    const generatedTin = '3' + clean.substring(1);
     return {
       success: true,
-      data: {
-        nameAr: hintCompanyName?.trim() || `منشأة تجارية معتمدة (${clean})`,
-        nameEn: `Registered Business (${clean})`,
-        tin: generatedTin,
-        vatNumber: `${generatedTin}00003`,
-        crNumber: clean,
-        crType: 'الرقم الوطني الموحد (700)',
-        isVatRegistered: true,
-        vatStatus: 'مسجل في ضريبة القيمة المضافة',
-        taxpayerStatus: 'منشأة تجارية نشطة لدى وزارة التجارة وهيئة الزكاة',
-        city: 'الرياض',
-        street: 'طريق الملك عبدالعزيز',
-        district: 'حي العليا',
-        buildingNumber: '4120',
-        postalCode: '12313',
-        registrationDate: '2023-01-01',
-        complianceStatus: 'compliant',
-      },
-      message: `تم التحقق من الرقم الوطني الموحد ${clean} وتوليد الرقم الضريبي المعتمد تلقائياً.`,
+      data: data.data,
+      message: data.message,
+    };
+  } catch (error: any) {
+    console.warn('Network error in verifyZatcaTaxpayerApi:', error);
+    return {
+      success: false,
+      message: error.message || 'حدث خطأ أثناء الاتصال بقاعدة بيانات هيئة الزكاة.',
     };
   }
-
-  return {
-    success: false,
-    message: 'تعذر العثور على سجل مطابق في قاعدة بيانات الهيئة. يرجى التأكد من إدخال الرقم المميز (10 أرقام) أو الرقم الضريبي (15 رقماً) أو الرقم الموحد (700).',
-  };
 }
 
 // ============================================================================

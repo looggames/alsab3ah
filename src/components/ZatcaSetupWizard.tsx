@@ -150,8 +150,8 @@ export const ZatcaSetupWizard: React.FC<ZatcaSetupWizardProps> = ({
     }
   };
 
-  // Step 1 -> Advance to Step 2
-  const handleProceedToOtpStep = () => {
+  // Step 1 -> Advance to Step 2 with API verification
+  const handleProceedToOtpStep = async () => {
     setErrorMessage('');
     if (!activeProfile.nameAr || !activeProfile.nameAr.trim()) {
       setErrorMessage('يرجى إدخال اسم المنشأة أو الشركة للمتابعة.');
@@ -167,20 +167,35 @@ export const ZatcaSetupWizard: React.FC<ZatcaSetupWizardProps> = ({
       return;
     }
 
-    const updatedProfile: CompanyProfile = {
-      ...activeProfile,
-      nameAr: activeProfile.nameAr.trim(),
-      taxNumber: norm.vatNumber,
-      crNumber: activeProfile.crNumber.trim(),
-      branchName: activeProfile.branchName?.trim() || '',
-      city: activeProfile.city?.trim() || '',
-    };
-    setActiveProfile(updatedProfile);
+    setIsVerifyingProfile(true);
+    try {
+      // Call backend API to verify taxpayer info against ZATCA directory
+      const verifyRes = await verifyZatcaTaxpayerApi(norm.vatNumber || activeProfile.crNumber, activeProfile.nameAr);
+      if (!verifyRes.success) {
+        setErrorMessage(verifyRes.message || 'تعذر التحقق من بيانات المنشأة لدى هيئة الزكاة. يرجى مراجعة البيانات.');
+        setIsVerifyingProfile(false);
+        return;
+      }
 
-    // Generate fresh CSR bundle matching the user entered profile details
-    const bundle = generateZatcaCsr(updatedProfile, environment, egsModel);
-    setKeysBundle(bundle);
-    setCurrentStep(2);
+      const updatedProfile: CompanyProfile = {
+        ...activeProfile,
+        nameAr: activeProfile.nameAr.trim(),
+        taxNumber: norm.vatNumber,
+        crNumber: activeProfile.crNumber.trim(),
+        branchName: activeProfile.branchName?.trim() || '',
+        city: activeProfile.city?.trim() || '',
+      };
+      setActiveProfile(updatedProfile);
+
+      // Generate fresh CSR bundle matching the user entered profile details
+      const bundle = generateZatcaCsr(updatedProfile, environment, egsModel);
+      setKeysBundle(bundle);
+      setCurrentStep(2);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'حدث خطأ أثناء التحقق من بيانات المنشأة.');
+    } finally {
+      setIsVerifyingProfile(false);
+    }
   };
 
   // Step 2 -> Full Automated Onboarding & Linking to Production
@@ -203,7 +218,7 @@ export const ZatcaSetupWizard: React.FC<ZatcaSetupWizardProps> = ({
 
     try {
       // 1. Request Compliance CSID
-      const complianceRes = await requestComplianceCsid(cleanOtp, currentBundle.csrPem, environment);
+      const complianceRes = await requestComplianceCsid(cleanOtp, currentBundle.csrPem, environment, activeProfile);
       if (!complianceRes.success || !complianceRes.complianceCsid) {
         throw new Error(complianceRes.message || 'فشل التحقق من رمز OTP مع بوابة هيئة الزكاة.');
       }
@@ -802,11 +817,13 @@ export const ZatcaSetupWizard: React.FC<ZatcaSetupWizardProps> = ({
             {currentStep === 1 && (
               <button
                 type="button"
+                disabled={isVerifyingProfile}
                 onClick={handleProceedToOtpStep}
-                className="px-6 py-2.5 bg-[#005126] text-white font-bold text-xs sm:text-sm rounded-xl hover:bg-[#006c35] transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+                className="px-6 py-2.5 bg-[#005126] text-white font-bold text-xs sm:text-sm rounded-xl hover:bg-[#006c35] transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-60 shadow-sm"
               >
-                <span>المتابعة إلى إدخال رمز التحقق (OTP)</span>
-                <ChevronLeft className="w-4 h-4" />
+                {isVerifyingProfile && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isVerifyingProfile ? 'جاري التحقق من الهيئة...' : 'المتابعة إلى إدخال رمز التحقق (OTP)'}</span>
+                {!isVerifyingProfile && <ChevronLeft className="w-4 h-4" />}
               </button>
             )}
 

@@ -10,7 +10,7 @@ import {
   initialZatcaLogs,
 } from './data/mockData';
 import { INITIAL_SAMPLE_PROPOSALS } from './utils/proposals';
-import { generateZatcaTlvQrCode } from './utils/zatca';
+import { generateZatcaTlvQrCode, submitInvoiceToZatcaApi } from './utils/zatca';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { DashboardView } from './components/DashboardView';
@@ -25,7 +25,7 @@ import { ZatcaLogsView } from './components/ZatcaLogsView';
 import { SettingsView } from './components/SettingsView';
 import { SuperAdminDashboardView } from './components/SuperAdminDashboardView';
 import { AccountLockedView } from './components/AccountLockedView';
-import { getOrRegisterUserAccount, isAccountLocked, getUserAccount } from './lib/subscriptions';
+import { getOrRegisterUserAccount, isAccountLocked, getUserAccount, getAllUsers, saveAllUsers } from './lib/subscriptions';
 import { InvoiceDetailModal } from './components/InvoiceDetailModal';
 import { CreditNoteModal } from './components/CreditNoteModal';
 import { EditInvoiceModal } from './components/EditInvoiceModal';
@@ -112,7 +112,21 @@ export default function App() {
   // Load Tenant Data on Auth Change
   const loadUserTenantData = useCallback(async (userId: string, userMeta?: any) => {
     try {
-      // Read any locally cached invoices first for instant recovery
+      // 1. Read locally cached profile first for instant recovery on refresh
+      let cachedProfile: CompanyProfile | null = null;
+      try {
+        const rawProf = localStorage.getItem(`zatca_pos_profile_${userId}`);
+        if (rawProf) {
+          cachedProfile = JSON.parse(rawProf);
+          if (cachedProfile) {
+            setCompanyProfile(cachedProfile);
+          }
+        }
+      } catch (e) {
+        console.warn('Error loading cached profile:', e);
+      }
+
+      // 2. Read any locally cached invoices
       let cachedInvoices: Invoice[] = [];
       try {
         const raw = localStorage.getItem(`zatca_pos_invoices_${userId}`);
@@ -123,7 +137,7 @@ export default function App() {
         console.warn('Error loading cached invoices:', e);
       }
 
-      // Read user scoped proposals
+      // 3. Read user scoped proposals
       let userProposals: CustomProposal[] = [];
       try {
         const propRaw = localStorage.getItem(`zatca_pos_proposals_${userId}`);
@@ -139,7 +153,19 @@ export default function App() {
       const dbData = await fetchTenantData(userId);
 
       if (dbData.hasDbData) {
-        if (dbData.profile) setCompanyProfile(dbData.profile);
+        if (dbData.profile) {
+          const mergedProf: CompanyProfile = {
+            ...initialCompanyProfile,
+            ...dbData.profile,
+            ...(cachedProfile || {}),
+          };
+          setCompanyProfile(mergedProf);
+          try {
+            localStorage.setItem(`zatca_pos_profile_${userId}`, JSON.stringify(mergedProf));
+          } catch (e) {}
+        } else if (cachedProfile) {
+          setCompanyProfile(cachedProfile);
+        }
         setProducts(dbData.products || []);
         setCategories(
           dbData.categories && dbData.categories.length > 0
@@ -181,17 +207,29 @@ export default function App() {
         setStockAlerts(dbData.stockAlerts || []);
         setZatcaLogs(dbData.zatcaLogs || []);
       } else {
-        // Initialize profile in Supabase for this new user
-        const companyName = userMeta?.company_name || 'مؤسسة تجارية';
-        const taxNum = userMeta?.tax_number || '';
-        const crNum = userMeta?.cr_number || '';
+        // If local cached profile exists, use it; otherwise initialize defaults
+        if (cachedProfile) {
+          setCompanyProfile(cachedProfile);
+        } else {
+          const companyName = userMeta?.company_name || 'مؤسسة تجارية';
+          const taxNum = userMeta?.tax_number || '';
+          const crNum = userMeta?.cr_number || '';
 
-        setCompanyProfile({
-          ...initialCompanyProfile,
-          nameAr: companyName,
-          taxNumber: taxNum,
-          crNumber: crNum,
-        });
+          const initProf: CompanyProfile = {
+            ...initialCompanyProfile,
+            nameAr: companyName,
+            branchName: companyName,
+            cashierName: companyName,
+            taxNumber: taxNum,
+            crNumber: crNum,
+          };
+          setCompanyProfile(initProf);
+          try {
+            localStorage.setItem(`zatca_pos_profile_${userId}`, JSON.stringify(initProf));
+          } catch (e) {}
+
+          await seedUserStarterData(userId, companyName, taxNum, crNum);
+        }
         setProducts([]);
         setCategories(initialCategories);
         setCustomers([]);
@@ -199,8 +237,6 @@ export default function App() {
         setCustomProposals(userProposals);
         setStockAlerts([]);
         setZatcaLogs([]);
-
-        await seedUserStarterData(userId, companyName, taxNum, crNum);
       }
     } catch (err) {
       console.warn('Error syncing tenant data with Supabase:', err);
@@ -366,7 +402,7 @@ export default function App() {
     if (!isOnboarded) {
       if (
         window.confirm(
-          'لم يتم إتمام الربط مع هيئة الزكاة (فاتورة) بعد.\nهل ترغب في فتح معالج الربط الآن لإدخال رمز التحقق OTP واعتماد شهادة التشفير (CSID)؟'
+          'لم يتم إتمام الربط مع هيئة الزكاة (فاتورة) بعد.\n\nلا يمكن اعتماد الفواتير رسمياً بدون توثيق شهادة تشفير الإنتاج (CSID).\nهل ترغب في فتح معالج الربط الآن لإدخال رمز التحقق OTP؟'
         )
       ) {
         setIsZatcaWizardOpen(true);
@@ -383,56 +419,75 @@ export default function App() {
     setIsSyncing(true);
     setSyncSuccess(false);
 
-    setTimeout(async () => {
-      setSyncedCount(countToSync);
+    try {
+      let passedCount = 0;
+      let failedCount = 0;
+      const updatedInvoices = [...invoices];
+      const newLogs: ZatcaLog[] = [];
 
-      // Convert pending to cleared
-      const updatedInvoices = invoices.map((inv) => {
+      for (let i = 0; i < updatedInvoices.length; i++) {
+        const inv = updatedInvoices[i];
         if (inv.zatcaStatus === 'pending') {
-          return {
-            ...inv,
-            zatcaStatus: 'cleared' as const,
-            zatcaSubmissionDate: new Date().toISOString(),
-            cryptographicStamp:
-              inv.cryptographicStamp || `MEUCIQD${Math.random().toString(36).substring(2, 10)}...ZATCA-PASS`,
-          };
+          const res = await submitInvoiceToZatcaApi(inv, companyProfile);
+          if (res.success) {
+            passedCount++;
+            const stampDate = res.submissionDate || new Date().toISOString();
+            updatedInvoices[i] = {
+              ...inv,
+              zatcaStatus: 'cleared',
+              zatcaSubmissionDate: stampDate,
+              cryptographicStamp: res.cryptographicStamp || `MEUCIQD${Math.random().toString(36).substring(2, 10)}...ZATCA-PASS`,
+            };
+            newLogs.push({
+              id: `log-${Date.now()}-${i}`,
+              invoiceNumber: inv.invoiceNumber,
+              timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
+              status: 'cleared',
+              message: `تم اعتماد ومطابقة الفاتورة لدى هيئة الزكاة (${res.dispositionMessage || 'Phase 2 Live'})`,
+              statusCode: 200,
+              hash: res.hash || 'bZ77Xq12KmP994zX+Live==',
+              durationMs: 42,
+            });
+          } else {
+            failedCount++;
+            updatedInvoices[i] = {
+              ...inv,
+              zatcaStatus: 'failed',
+            };
+            newLogs.push({
+              id: `log-${Date.now()}-${i}`,
+              invoiceNumber: inv.invoiceNumber,
+              timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
+              status: 'failed',
+              message: `رفض الفاتورة من هيئة الزكاة: ${res.message}`,
+              statusCode: res.statusCode || 422,
+              durationMs: 38,
+            });
+          }
         }
-        return inv;
-      });
+      }
 
-      // Add real audit log
-      const newLog: ZatcaLog = {
-        id: `log-${Date.now()}`,
-        invoiceNumber: `BATCH-SYNC-${new Date().toLocaleTimeString('ar-SA')}`,
-        timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
-        status: 'cleared',
-        message: `تم اعتماد ومزامنة ${countToSync} فاتورة مع هيئة الزكاة (Clearance & Reporting v2)`,
-        statusCode: 200,
-        hash: 'bZ77Xq12KmP994zX+Live==',
-        durationMs: 38,
-      };
-
+      setSyncedCount(passedCount);
       setInvoices(updatedInvoices);
-      setZatcaLogs([newLog, ...zatcaLogs]);
+      if (newLogs.length > 0) {
+        setZatcaLogs((prev) => [...newLogs, ...prev]);
+      }
       setIsSyncing(false);
-      setSyncSuccess(true);
+
+      if (passedCount > 0) {
+        setSyncSuccess(true);
+        setTimeout(() => setSyncSuccess(false), 4000);
+      }
+
+      if (failedCount > 0) {
+        alert(`تمت مزامنة ${passedCount} فاتورة بنجاح.\nتعذر اعتماد ${failedCount} فاتورة بسبب عدم مطابقة البيانات لشروط هيئة الزكاة.`);
+      } else {
+        alert(`تم اعتماد ومزامنة ${passedCount} فاتورة بنجاح مع منصة فاتورة (ZATCA Phase 2).`);
+      }
 
       // Persist to Supabase if session active
       if (session?.user) {
         try {
-          await supabase.from('zatca_logs').upsert({
-            id: newLog.id,
-            user_id: session.user.id,
-            invoice_number: newLog.invoiceNumber,
-            timestamp: newLog.timestamp,
-            status: newLog.status,
-            message: newLog.message,
-            status_code: newLog.statusCode,
-            hash: newLog.hash,
-            duration_ms: newLog.durationMs,
-          });
-
-          // update pending invoices in DB
           for (const inv of updatedInvoices.filter((i) => i.zatcaStatus === 'cleared')) {
             await supabase.from('invoices').update({
               zatca_status: 'cleared',
@@ -444,11 +499,11 @@ export default function App() {
           console.warn('Sync log error:', e);
         }
       }
-
-      setTimeout(() => {
-        setSyncSuccess(false);
-      }, 4000);
-    }, 1200);
+    } catch (err: any) {
+      console.error('Error during batch ZATCA sync:', err);
+      setIsSyncing(false);
+      alert(`حدث خطأ أثناء الاتصال بهيئة الزكاة: ${err.message}`);
+    }
   };
 
   // Handle New Sale Complete
@@ -592,64 +647,104 @@ export default function App() {
   // Link a single pending invoice directly to ZATCA
   const handleLinkSingleInvoiceToZatca = async (invoice: Invoice): Promise<boolean> => {
     if (!isOnboarded) {
+      alert(
+        'تعذر اعتماد وربط الفاتورة لدى هيئة الزكاة (منصة فاتورة):\n\n' +
+        'المنشأة ووحدة الفوترة غير مربوطة بشهادة إنتاج (CSID) سارية المفعول.\n' +
+        'يرجى فتح معالج الربط وإتمام ربط المنشأة برمز التحقق (OTP) أولاً.'
+      );
       setIsZatcaWizardOpen(true);
       return false;
     }
 
-    const timestamp = new Date().toISOString();
-    const updatedInvoice: Invoice = {
-      ...invoice,
-      zatcaStatus: 'cleared',
-      zatcaSubmissionDate: timestamp,
-      cryptographicStamp: `MEUCIQD${Math.random().toString(36).substring(2, 12)}...ZATCA-LIVE-STAMP`,
-    };
+    try {
+      const res = await submitInvoiceToZatcaApi(invoice, companyProfile);
 
-    setInvoices((prev) =>
-      prev.map((inv) => (inv.id === invoice.id ? updatedInvoice : inv))
-    );
-    if (activeInvoice?.id === invoice.id) {
-      setActiveInvoice(updatedInvoice);
-    }
+      if (!res.success) {
+        alert(`رفض الفاتورة من منصة فاتورة (ZATCA Validation Error):\n\n${res.message}`);
+        const failedInvoice: Invoice = {
+          ...invoice,
+          zatcaStatus: 'failed',
+        };
+        setInvoices((prev) =>
+          prev.map((inv) => (inv.id === invoice.id ? failedInvoice : inv))
+        );
+        if (activeInvoice?.id === invoice.id) {
+          setActiveInvoice(failedInvoice);
+        }
 
-    const newLog: ZatcaLog = {
-      id: `log-${Date.now()}`,
-      invoiceNumber: invoice.invoiceNumber,
-      timestamp: `${invoice.date} ${invoice.time}`,
-      status: 'cleared',
-      message: `تم اعتماد وربط الفاتورة بنجاح مع منصة فاتورة (Production Live Clearance)`,
-      statusCode: 200,
-      hash: 'h8Xk291LmPq94zX+K9QvNw==',
-      durationMs: 46,
-    };
-    setZatcaLogs((prev) => [newLog, ...prev]);
-
-    if (session?.user) {
-      try {
-        await supabase
-          .from('invoices')
-          .update({
-            zatca_status: 'cleared',
-            zatca_submission_date: timestamp,
-            cryptographic_stamp: updatedInvoice.cryptographicStamp,
-          })
-          .eq('id', invoice.id);
-
-        await supabase.from('zatca_logs').upsert({
-          id: newLog.id,
-          user_id: session.user.id,
-          invoice_number: newLog.invoiceNumber,
-          timestamp: newLog.timestamp,
-          status: newLog.status,
-          message: newLog.message,
-          status_code: newLog.statusCode,
-          hash: newLog.hash,
-          duration_ms: newLog.durationMs,
-        });
-      } catch (err) {
-        console.warn('Error linking invoice to ZATCA in Supabase:', err);
+        const failLog: ZatcaLog = {
+          id: `log-${Date.now()}`,
+          invoiceNumber: invoice.invoiceNumber,
+          timestamp: `${invoice.date} ${invoice.time}`,
+          status: 'failed',
+          message: `رفض الفاتورة من منصة فاتورة: ${res.message}`,
+          statusCode: res.statusCode || 422,
+          durationMs: 46,
+        };
+        setZatcaLogs((prev) => [failLog, ...prev]);
+        return false;
       }
+
+      const timestamp = res.submissionDate || new Date().toISOString();
+      const updatedInvoice: Invoice = {
+        ...invoice,
+        zatcaStatus: 'cleared',
+        zatcaSubmissionDate: timestamp,
+        cryptographicStamp: res.cryptographicStamp || `MEUCIQD${Math.random().toString(36).substring(2, 12)}...ZATCA-LIVE-STAMP`,
+      };
+
+      setInvoices((prev) =>
+        prev.map((inv) => (inv.id === invoice.id ? updatedInvoice : inv))
+      );
+      if (activeInvoice?.id === invoice.id) {
+        setActiveInvoice(updatedInvoice);
+      }
+
+      const newLog: ZatcaLog = {
+        id: `log-${Date.now()}`,
+        invoiceNumber: invoice.invoiceNumber,
+        timestamp: `${invoice.date} ${invoice.time}`,
+        status: 'cleared',
+        message: `تم اعتماد وربط الفاتورة بنجاح مع منصة فاتورة (${res.dispositionMessage || 'Production Live Clearance'})`,
+        statusCode: 200,
+        hash: res.hash || 'h8Xk291LmPq94zX+K9QvNw==',
+        durationMs: 46,
+      };
+      setZatcaLogs((prev) => [newLog, ...prev]);
+
+      if (session?.user) {
+        try {
+          await supabase
+            .from('invoices')
+            .update({
+              zatca_status: 'cleared',
+              zatca_submission_date: timestamp,
+              cryptographic_stamp: updatedInvoice.cryptographicStamp,
+            })
+            .eq('id', invoice.id);
+
+          await supabase.from('zatca_logs').upsert({
+            id: newLog.id,
+            user_id: session.user.id,
+            invoice_number: newLog.invoiceNumber,
+            timestamp: newLog.timestamp,
+            status: newLog.status,
+            message: newLog.message,
+            status_code: newLog.statusCode,
+            hash: newLog.hash,
+            duration_ms: newLog.durationMs,
+          });
+        } catch (err) {
+          console.warn('Error linking invoice to ZATCA in Supabase:', err);
+        }
+      }
+      alert('تم اعتماد الفاتورة ومطابقتها رسمياً بنجاح لدى هيئة الزكاة والضريبة والجمارك (فاتورة Phase 2).');
+      return true;
+    } catch (err: any) {
+      console.error('Error linking invoice to ZATCA:', err);
+      alert(`حدث خطأ أثناء الاتصال بهيئة الزكاة: ${err.message}`);
+      return false;
     }
-    return true;
   };
 
   // Save edited pending/local invoice
@@ -985,7 +1080,7 @@ export default function App() {
       totalVat: proposal.totalVat,
       grandTotal: proposal.grandTotal,
       paymentMethod: 'card',
-      zatcaStatus: isOnboarded ? 'cleared' : 'pending',
+      zatcaStatus: 'pending',
       qrCodeData: qrData,
       branch: selectedBranch || 'الفرع الرئيسي',
       cashierName: companyProfile.cashierName || 'المبيعات',
@@ -1127,26 +1222,59 @@ export default function App() {
   const handleSaveProfile = async (profile: CompanyProfile) => {
     setCompanyProfile(profile);
 
-    if (session?.user) {
+    const userId = session?.user?.id;
+    if (userId) {
+      // 1. Immediately cache in localStorage for instant persistence across reloads
+      try {
+        localStorage.setItem(`zatca_pos_profile_${userId}`, JSON.stringify(profile));
+      } catch (e) {
+        console.warn('LocalStorage profile save error:', e);
+      }
+
+      // 2. Also update AppUser list & currentUserAccount so Header and Admin panels sync
+      try {
+        const users = getAllUsers();
+        const cleanEmail = (session.user.email || '').trim().toLowerCase();
+        const uIndex = users.findIndex(
+          (u) => u.id === userId || (cleanEmail && u.email.toLowerCase() === cleanEmail)
+        );
+        if (uIndex !== -1) {
+          const updatedUser: AppUser = {
+            ...users[uIndex],
+            companyName: profile.nameAr || users[uIndex].companyName,
+            taxNumber: profile.taxNumber || users[uIndex].taxNumber,
+            crNumber: profile.crNumber || users[uIndex].crNumber,
+            phone: profile.phone || users[uIndex].phone,
+          };
+          users[uIndex] = updatedUser;
+          saveAllUsers(users);
+          setCurrentUserAccount(updatedUser);
+        }
+      } catch (e) {
+        console.warn('Error updating user account with profile info:', e);
+      }
+
+      // 3. Persist to Supabase
       try {
         await supabase.from('company_profiles').upsert({
-          user_id: session.user.id,
+          user_id: userId,
           name_ar: profile.nameAr,
-          name_en: profile.nameEn,
-          tax_number: profile.taxNumber,
-          cr_number: profile.crNumber,
-          branch_name: profile.branchName,
-          building_number: profile.buildingNumber,
-          street_name: profile.streetName,
-          district: profile.district,
-          city: profile.city,
-          postal_code: profile.postalCode,
-          phone: profile.phone,
-          email: profile.email,
-          default_vat_rate: profile.defaultVatRate,
-          csid_status: profile.csidStatus,
-          environment: profile.environment,
-        });
+          name_en: profile.nameEn || '',
+          tax_number: profile.taxNumber || '',
+          cr_number: profile.crNumber || '',
+          branch_name: profile.branchName || '',
+          building_number: profile.buildingNumber || '',
+          street_name: profile.streetName || '',
+          district: profile.district || '',
+          city: profile.city || '',
+          postal_code: profile.postalCode || '',
+          phone: profile.phone || '',
+          email: profile.email || '',
+          default_vat_rate: profile.defaultVatRate ?? 0.15,
+          csid_status: profile.csidStatus || 'pending',
+          environment: profile.environment || 'production',
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'user_id' });
       } catch (err) {
         console.warn('Supabase profile sync error:', err);
       }
@@ -1164,6 +1292,15 @@ export default function App() {
     };
     setCompanyProfile(newProfile);
 
+    const userId = session?.user?.id;
+    if (userId) {
+      try {
+        localStorage.setItem(`zatca_pos_profile_${userId}`, JSON.stringify(newProfile));
+      } catch (e) {
+        console.warn('Error saving zatca profile to localStorage:', e);
+      }
+    }
+
     // Add audit log for successful onboarding
     const newLog: ZatcaLog = {
       id: `log-onboard-${Date.now()}`,
@@ -1178,10 +1315,10 @@ export default function App() {
     };
     setZatcaLogs((prev) => [newLog, ...prev]);
 
-    if (session?.user?.id) {
+    if (userId) {
       try {
         await supabase.from('company_profiles').upsert({
-          user_id: session.user.id,
+          user_id: userId,
           name_ar: newProfile.nameAr,
           tax_number: newProfile.taxNumber,
           cr_number: newProfile.crNumber,
@@ -1190,7 +1327,7 @@ export default function App() {
           csid_status: newProfile.csidStatus,
           environment: newProfile.environment,
           updated_at: new Date().toISOString(),
-        });
+        }, { onConflict: 'user_id' });
       } catch (err) {
         console.warn('Supabase ZATCA profile sync error:', err);
       }
@@ -1204,6 +1341,7 @@ export default function App() {
       try {
         localStorage.removeItem(`zatca_pos_invoices_${session.user.id}`);
         localStorage.removeItem(`zatca_pos_proposals_${session.user.id}`);
+        localStorage.removeItem(`zatca_pos_profile_${session.user.id}`);
       } catch {
         // ignore
       }
@@ -1339,12 +1477,14 @@ export default function App() {
             onCompleteSale={handleCompleteSale}
             onUpdateInvoice={handleSaveEditedInvoice}
             onOpenInvoiceModal={(inv) => setActiveInvoice(inv)}
+            companyProfile={companyProfile}
             companyVatNumber={companyProfile.taxNumber}
             companyName={companyProfile.nameAr}
             branchName={companyProfile.branchName || companyProfile.nameAr || 'الفرع الرئيسي'}
             cashierName={companyProfile.cashierName || companyProfile.nameAr || 'الكاشير'}
             defaultVatRate={companyProfile.defaultVatRate ?? 0.15}
             isOnboarded={isOnboarded}
+            onOpenZatcaWizard={() => setIsZatcaWizardOpen(true)}
             onAddCustomer={handleAddCustomer}
             selectedCustomerFromApp={posCustomer}
             onClearSelectedCustomerFromApp={() => setPosCustomer(null)}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CompanyProfile } from '../types';
 import {
   Building2,
@@ -36,6 +36,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ profile, onSaveProfi
   const [formData, setFormData] = useState<CompanyProfile>(profile);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
+  // Sync state whenever profile prop changes (e.g. after async DB load or refresh)
+  useEffect(() => {
+    setFormData(profile);
+  }, [profile]);
+
   // ZATCA / Wathq API Verification States
   const [lookupQuery, setLookupQuery] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
@@ -51,6 +56,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ profile, onSaveProfi
     const finalProfile: CompanyProfile = {
       ...formData,
       taxNumber: taxNorm.isValid ? taxNorm.vatNumber : formData.taxNumber,
+      branchName: formData.branchName || formData.nameAr || 'الفرع الرئيسي',
+      cashierName: formData.cashierName || formData.nameAr || 'كاشير رئيسي',
     };
     onSaveProfile(finalProfile);
     setFormData(finalProfile);
@@ -77,18 +84,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ profile, onSaveProfi
   };
 
   const applyVerifiedDataToForm = (data: NonNullable<ZatcaTaxpayerLookupResult['data']>) => {
-    setFormData((prev) => ({
-      ...prev,
+    const updatedProfile: CompanyProfile = {
+      ...formData,
       nameAr: data.nameAr,
-      nameEn: data.nameEn,
+      nameEn: data.nameEn || formData.nameEn,
       taxNumber: data.vatNumber,
       crNumber: data.crNumber,
-      city: data.city,
-      streetName: data.street,
-      district: data.district,
-      buildingNumber: data.buildingNumber,
-      postalCode: data.postalCode,
-    }));
+      city: data.city || formData.city,
+      streetName: data.street || formData.streetName,
+      district: data.district || formData.district,
+      buildingNumber: data.buildingNumber || formData.buildingNumber,
+      postalCode: data.postalCode || formData.postalCode,
+      branchName: formData.branchName || data.nameAr,
+      cashierName: formData.cashierName || data.nameAr,
+    };
+    setFormData(updatedProfile);
+    onSaveProfile(updatedProfile);
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 3000);
   };

@@ -3,7 +3,6 @@ import { NavTab, UserRole } from '../types';
 import {
   Search,
   ChevronDown,
-  CloudUpload,
   Bell,
   HelpCircle,
   Menu,
@@ -20,8 +19,8 @@ import {
 interface HeaderProps {
   currentTab: NavTab;
   onOpenMobileMenu: () => void;
-  onTriggerZatcaSync: () => void;
-  isSyncing: boolean;
+  onTriggerZatcaSync?: () => void;
+  isSyncing?: boolean;
   selectedBranch: string;
   onSelectBranch: (branch: string) => void;
   pendingCount: number;
@@ -38,8 +37,6 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   currentTab,
   onOpenMobileMenu,
-  onTriggerZatcaSync,
-  isSyncing,
   selectedBranch,
   onSelectBranch,
   pendingCount,
@@ -154,26 +151,6 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           )}
         </div>
-
-        {/* Upload to ZATCA Button (Non-superadmin only) */}
-        {!isSuperadmin && (
-          <button
-            onClick={onTriggerZatcaSync}
-            disabled={isSyncing}
-            className={`hidden lg:flex items-center gap-2 px-4 py-2 bg-[#d0e1fb] text-[#191c1e] rounded-full text-xs font-semibold hover:bg-[#d3e4fe] transition-all cursor-pointer ${
-              isSyncing ? 'opacity-80 animate-pulse' : ''
-            }`}
-            title="مزامنة وتدقيق الفواتير مع منصة فاتورة التابعة لهيئة الزكاة والضريبة والجمارك"
-          >
-            <span>{isSyncing ? 'جاري الرفع للهيئة...' : 'رفع للهيئة'}</span>
-            <CloudUpload className={`w-4 h-4 text-[#005126] ${isSyncing ? 'animate-bounce' : ''}`} />
-            {pendingCount > 0 && (
-              <span className="bg-[#005126] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
-                {pendingCount}
-              </span>
-            )}
-          </button>
-        )}
 
         {/* Icon Actions Divider */}
         <div className="flex items-center gap-1 border-r border-[#becabd] pr-3 mr-1">

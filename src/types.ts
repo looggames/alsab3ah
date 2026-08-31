@@ -166,7 +166,7 @@ export interface ZatcaLog {
   status: ZatcaStatus;
   message: string;
   statusCode: number;
-  hash: string;
+  hash?: string;
   durationMs: number;
   requestType?: 'compliance_csid' | 'production_csid' | 'clearance' | 'reporting' | 'check';
   responsePayload?: string;
