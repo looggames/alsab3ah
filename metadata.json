@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix Remix نظام سحاب - المحاسبة ونقاط البيع",
+  "description": "منظومة سحاب السحابية لإدارة نقاط البيع، الفواتير الإلكترونية المعتمدة من هيئة الزكاة والضريبة والجمارك (فاتورة)، وإدارة المخزون والمحاسبة.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

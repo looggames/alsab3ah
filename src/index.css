@@ -1,0 +1,106 @@
+@import "tailwindcss";
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    font-family: 'Tajawal', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  }
+
+  html,
+  body {
+    font-family: 'Tajawal', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  }
+
+  .font-currency,
+  .font-mono {
+    font-family: 'Tajawal', monospace, sans-serif !important;
+  }
+}
+
+/* Print styling for clean invoice printing */
+@media print {
+  @page {
+    margin: 6mm;
+    size: auto;
+  }
+  html, body {
+    background: white !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+  body * {
+    visibility: hidden;
+  }
+  #printable-invoice-document,
+  #printable-invoice-document * {
+    visibility: visible !important;
+  }
+  #printable-invoice-document {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 10px !important;
+    background: white !important;
+    color: black !important;
+    box-shadow: none !important;
+    border: none !important;
+    display: block !important;
+  }
+  #printable-invoice-document.pos-mode {
+    max-width: 80mm !important;
+    width: 80mm !important;
+    margin: 0 auto !important;
+    padding: 2mm !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+  }
+  .no-print,
+  dialog,
+  header,
+  footer,
+  aside,
+  nav {
+    display: none !important;
+  }
+}
+
+/* Custom scrollbar for data tables and panels */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: #becabd;
+  border-radius: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: #6f7a6f;
+}
+
+/* Material symbols setup */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  vertical-align: middle;
+  line-height: 1;
+}
+
+.material-symbols-outlined.fill {
+  font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
