@@ -605,6 +605,88 @@ export async function submitInvoiceToZatcaApi(
   profile: any,
   environment: 'production' | 'simulation' | 'sandbox' = 'production'
 ): Promise<ZatcaInvoiceSubmissionResult> {
+  if (!invoice) {
+    return {
+      success: false,
+      statusCode: 400,
+      zatcaStatus: 'failed',
+      message: 'بيانات الفاتورة مفقودة أو غير صالحة.',
+    };
+  }
+
+  // Pre-flight check 1: Grand Total must be positive
+  const grandTotal = parseFloat(invoice.grandTotal) || 0;
+  if (grandTotal <= 0) {
+    return {
+      success: false,
+      statusCode: 400,
+      zatcaStatus: 'failed',
+      message: 'رفض الفاتورة من هيئة الزكاة (ZATCA Error 400 - BR-CO-10):\n\nإجمالي الفاتورة 0.00 ر.س. تمنع لوائح الفوترة الإلكترونية اعتماد أو إرسال فواتير بمبالغ صفرية دون بنود خاضعة للضريبة.',
+      errors: [
+        {
+          category: 'BUSINESS_RULE_ERROR',
+          code: 'BR-CO-10',
+          message: 'Invoice total amount must be greater than zero.',
+        },
+      ],
+    };
+  }
+
+  // Pre-flight check 2: Items must be present
+  const items = Array.isArray(invoice.items) ? invoice.items : [];
+  if (items.length === 0) {
+    return {
+      success: false,
+      statusCode: 400,
+      zatcaStatus: 'failed',
+      message: 'رفض الفاتورة من هيئة الزكاة (ZATCA Error 400 - BR-16):\n\nالفاتورة لا تحتوي على أي بنود أو أصناف مسجلة.',
+      errors: [
+        {
+          category: 'BUSINESS_RULE_ERROR',
+          code: 'BR-16',
+          message: 'An invoice must contain at least one line item.',
+        },
+      ],
+    };
+  }
+
+  // Pre-flight check 3: Taxpayer Name
+  const companyName = (profile?.nameAr || invoice.branch || '').trim().toLowerCase();
+  const isPlaceholderName = /^(test|تجربة|تست|demo|sample|abc|xyz|123|qwfqw)/i.test(companyName) || companyName.length < 3;
+  if (isPlaceholderName) {
+    return {
+      success: false,
+      statusCode: 400,
+      zatcaStatus: 'failed',
+      message: `رفض الفاتورة من هيئة الزكاة (ZATCA Error 400 - Invalid Taxpayer Name):\n\nاسم المنشأة المدخل ("${profile?.nameAr || companyName}") اسم تجريبي/غير معتمد في السجل التجاري لمنصة فاتورة.`,
+      errors: [
+        {
+          category: 'TAXPAYER_VALIDATION',
+          code: 'INVALID_TAXPAYER_NAME',
+          message: 'Taxpayer organization name is invalid or test placeholder.',
+        },
+      ],
+    };
+  }
+
+  // Pre-flight check 4: VAT Number
+  const taxNum = (profile?.taxNumber || '').replace(/\D/g, '');
+  if (!taxNum || taxNum.length !== 15 || !taxNum.startsWith('3') || !taxNum.endsWith('3')) {
+    return {
+      success: false,
+      statusCode: 400,
+      zatcaStatus: 'failed',
+      message: 'رفض الفاتورة من هيئة الزكاة (ZATCA Error 400 - Invalid VAT Number):\n\nالرقم الضريبي للمنشأة غير متوافق مع مواصفات الهيئة (يجب أن يتكون من 15 رقماً ويبدأ وينتهي بالرقم 3).',
+      errors: [
+        {
+          category: 'VAT_VALIDATION',
+          code: 'INVALID_VAT_NUMBER',
+          message: 'Taxpayer VAT number format is invalid.',
+        },
+      ],
+    };
+  }
+
   try {
     const res = await fetch('/api/zatca/report-invoice', {
       method: 'POST',
@@ -618,14 +700,21 @@ export async function submitInvoiceToZatcaApi(
       }),
     });
 
-    const data = await res.json();
-    if (!res.ok || !data.success) {
+    let data: any = null;
+    try {
+      const text = await res.text();
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+
+    if (!res.ok || !data || !data.success) {
       return {
         success: false,
-        statusCode: data.statusCode || res.status,
+        statusCode: data?.statusCode || res.status || 400,
         zatcaStatus: 'failed',
-        message: data.message || 'تم رفض الفاتورة من قبل منصة فاتورة (ZATCA Validation Error).',
-        errors: data.errors || [],
+        message: data?.message || 'تم رفض الفاتورة من قبل منصة فاتورة التابعة لهيئة الزكاة.',
+        errors: data?.errors || [],
       };
     }
 
@@ -671,11 +760,18 @@ export async function verifyZatcaTaxpayerApi(
       }),
     });
 
-    const data = await res.json();
-    if (!res.ok || !data.success) {
+    let data: any = null;
+    try {
+      const text = await res.text();
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+
+    if (!res.ok || !data || !data.success) {
       return {
         success: false,
-        message: data.message || 'تعذر التحقق من بيانات المنشأة لدى هيئة الزكاة والضريبة والجمارك.',
+        message: data?.message || 'تعذر التحقق من بيانات المنشأة لدى هيئة الزكاة والضريبة والجمارك.',
       };
     }
 
