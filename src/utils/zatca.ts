@@ -1,5 +1,22 @@
 import { CompanyProfile, Invoice, ZatcaComplianceCheckResult, ZatcaConfig, ZatcaLog } from '../types';
 
+/**
+ * Robust Base64 encoder supporting full UTF-8 Unicode (Arabic, etc.)
+ */
+export function safeBase64Encode(str: string): string {
+  try {
+    const bytes = new TextEncoder().encode(str);
+    let binary = '';
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return window.btoa(binary);
+  } catch {
+    return window.btoa(unescape(encodeURIComponent(str)));
+  }
+}
+
 // ============================================================================
 // 1. ZATCA Phase 1 & Phase 2 QR Code TLV Encoder (Tags 1 through 9)
 // ============================================================================
@@ -260,7 +277,7 @@ export async function requestComplianceCsid(
   const expiry = new Date();
   expiry.setFullYear(expiry.getFullYear() + 1);
 
-  const complianceToken = `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.${window.btoa(
+  const complianceToken = `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.${safeBase64Encode(
     JSON.stringify({
       iss: 'ZATCA Fatoora Root CA',
       sub: `ZATCA Compliance EGS - ${profile?.nameAr || 'المكلف'}`,
@@ -374,7 +391,7 @@ export async function requestProductionCsid(
   oneYearExpiry.setFullYear(oneYearExpiry.getFullYear() + 1);
   const expiryDate = oneYearExpiry.toISOString().split('T')[0];
 
-  const prodToken = `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.${window.btoa(
+  const prodToken = `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.${safeBase64Encode(
     JSON.stringify({
       iss: 'ZATCA Fatoora Production CA',
       sub: 'ZATCA Production EGS Cryptographic Stamp',
