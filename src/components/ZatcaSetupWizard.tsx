@@ -8,6 +8,8 @@ import {
   normalizeSaudiTaxNumber,
   normalizeSaudiCrNumber,
   verifyZatcaTaxpayerApi,
+  validateZatcaTaxpayerProfile,
+  validateZatcaOtp,
 } from '../utils/zatca';
 import {
   ShieldCheck,
@@ -153,17 +155,17 @@ export const ZatcaSetupWizard: React.FC<ZatcaSetupWizardProps> = ({
   // Step 1 -> Advance to Step 2 with API verification
   const handleProceedToOtpStep = async () => {
     setErrorMessage('');
-    if (!activeProfile.nameAr || !activeProfile.nameAr.trim()) {
-      setErrorMessage('يرجى إدخال اسم المنشأة أو الشركة للمتابعة.');
+    
+    // Validate profile using the central validator
+    const profileValidation = validateZatcaTaxpayerProfile(activeProfile);
+    if (!profileValidation.isValid) {
+      setErrorMessage(profileValidation.error || 'يرجى التأكد من صحة بيانات المنشأة.');
       return;
     }
+
     const norm = normalizeSaudiTaxNumber(activeProfile.taxNumber);
     if (!norm.isValid) {
       setErrorMessage('يرجى التأكد من إدخال الرقم الضريبي الصحيح (10 أرقام TIN أو 15 رقماً VAT تبدأ وتنتهي بالرقم 3).');
-      return;
-    }
-    if (!activeProfile.crNumber || !activeProfile.crNumber.trim()) {
-      setErrorMessage('يرجى إدخال السجل التجاري أو الرقم الوطني الموحد 700 للمنشأة.');
       return;
     }
 
@@ -208,8 +210,22 @@ export const ZatcaSetupWizard: React.FC<ZatcaSetupWizardProps> = ({
 
     setErrorMessage('');
     const cleanOtp = otp.trim().replace(/\D/g, '');
-    if (cleanOtp.length !== 6) {
-      setErrorMessage('رمز التحقق OTP يجب أن يتكون من 6 أرقام صادرة من بوابة فاتورة.');
+    
+    // Validate OTP using the central validator
+    const otpValidation = validateZatcaOtp(cleanOtp);
+    if (!otpValidation.isValid) {
+      setErrorMessage(otpValidation.error || 'رمز التحقق OTP غير صالح.');
+      setLinkingOutcome('failed');
+      setCurrentStep(3);
+      return;
+    }
+
+    // Validate active profile again before submitting
+    const profileValidation = validateZatcaTaxpayerProfile(activeProfile);
+    if (!profileValidation.isValid) {
+      setErrorMessage(profileValidation.error || 'بيانات المنشأة غير مطابقة لمواصفات هيئة الزكاة.');
+      setLinkingOutcome('failed');
+      setCurrentStep(3);
       return;
     }
 
